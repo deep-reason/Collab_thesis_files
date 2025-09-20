@@ -21,7 +21,7 @@ import evaluate
 # Hard-coded defaults
 # ----------------------------
 DATASET_NAME = "AhunInteligence/w2v-bert-2.0-finetuning-amharic"
-DATASET_CONFIG = "tr"
+DATASET_CONFIG = "default"
 TRAIN_SPLIT = "train"
 VALID_SPLIT = "valid"
 TEST_SPLIT = "test"
