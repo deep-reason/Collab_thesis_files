@@ -26,8 +26,10 @@ TRAIN_SPLIT = "train"
 VALID_SPLIT = "valid"
 TEST_SPLIT = "test"
 PRETRAINED_MODEL = "facebook/wav2vec2-xls-r-300m"
+TOKENIZER_REPO = "AhunInteligence/w2v-bert-2.0-amharic-finetunining-tokenizer"
 REPO_NAME = "wav2vec2-large-xls-r-300m-tr-Collab"
-OUTPUT_DIR = os.path.join("/kaggle/working", REPO_NAME)
+BASE_DIR = "/content"
+OUTPUT_DIR = os.path.join(BASE_DIR, REPO_NAME)
 NUM_TRAIN_EPOCHS = 30
 PER_DEVICE_TRAIN_BATCH_SIZE = 8
 PER_DEVICE_EVAL_BATCH_SIZE = 8
@@ -45,87 +47,32 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 torch.backends.cudnn.benchmark = True  # Optimize GPU throughput
 
 # ----------------------------
-# Preprocessing helpers
-# ----------------------------
-CHARS_TO_REMOVE = r'[\,\?\.\!\-\;\:\"\“\%\‘\”\�\']'
-
-def remove_special_characters(batch):
-    if batch["sentence"] is None:
-        batch["sentence"] = ""
-    batch["sentence"] = re.sub(CHARS_TO_REMOVE, '', batch["sentence"]).lower()
-    return batch
-
-def replace_hatted_characters(batch):
-    if batch["sentence"] is None:
-        batch["sentence"] = ""
-    batch["sentence"] = re.sub('[â]', 'a', batch["sentence"])
-    batch["sentence"] = re.sub('[î]', 'i', batch["sentence"])
-    batch["sentence"] = re.sub('[ô]', 'o', batch["sentence"])
-    batch["sentence"] = re.sub('[û]', 'u', batch["sentence"])
-    return batch
-
-# ----------------------------
-# Build vocabulary from dataset
-# ----------------------------
-def build_and_save_vocab(train_ds, test_ds, vocab_path="vocab.json"):
-    def extract_all_chars(batch):
-        all_text = " ".join(filter(None, batch["sentence"])) if isinstance(batch["sentence"], list) else batch["sentence"] or ""
-        vocab = list(set(all_text))
-        return {"vocab": [vocab], "all_text": [all_text]}
-
-    vt = train_ds.map(extract_all_chars, batched=True, batch_size=-1, keep_in_memory=True, remove_columns=train_ds.column_names)
-    vs = test_ds.map(extract_all_chars, batched=True, batch_size=-1, keep_in_memory=True, remove_columns=test_ds.column_names)
-
-    vocab_list = list(set(vt["vocab"][0]) | set(vs["vocab"][0]))
-    vocab_dict = {v: k for k, v in enumerate(sorted(vocab_list))}
-
-    if " " in vocab_dict:
-        vocab_dict["|"] = vocab_dict[" "]
-        del vocab_dict[" "]
-
-    vocab_dict["[UNK]"] = len(vocab_dict)
-    vocab_dict["[PAD]"] = len(vocab_dict)
-
-    with open(vocab_path, 'w', encoding='utf-8') as vf:
-        json.dump(vocab_dict, vf, ensure_ascii=False)
-
-    print(f"Saved vocab ({len(vocab_dict)}) to {vocab_path}")
-    return vocab_path
-
-# ----------------------------
 # Load and preprocess dataset
 # ----------------------------
 print("Loading dataset...")
 raw_train = load_dataset(DATASET_NAME, DATASET_CONFIG, split=TRAIN_SPLIT)
-raw_test = load_dataset(DATASET_NAME, DATASET_CONFIG, split=EVAL_SPLIT)
-
-print("Cleaning transcripts...")
-raw_train = raw_train.map(remove_special_characters, num_proc=4)
-raw_test = raw_test.map(remove_special_characters, num_proc=4)
-raw_train = raw_train.map(replace_hatted_characters, num_proc=4)
-raw_test = raw_test.map(replace_hatted_characters, num_proc=4)
-
-vocab_path = os.path.join(OUTPUT_DIR, "vocab.json")
-build_and_save_vocab(raw_train, raw_test, vocab_path=vocab_path)
-
-tokenizer = Wav2Vec2CTCTokenizer(vocab_path, unk_token='[UNK]', pad_token='[PAD]', word_delimiter_token='|')
-feature_extractor = Wav2Vec2FeatureExtractor(feature_size=1, sampling_rate=16000, padding_value=0.0, do_normalize=True, return_attention_mask=True)
-processor = Wav2Vec2Processor(feature_extractor=feature_extractor, tokenizer=tokenizer)
+raw_valid = load_dataset(DATASET_NAME, DATASET_CONFIG, split=VALID_SPLIT)
+raw_test = load_dataset(DATASET_NAME, DATASET_CONFIG, split=TEST_SPLIT)
 
 raw_train = raw_train.cast_column("audio", Audio(sampling_rate=16_000))
+raw_valid = raw_valid.cast_column("audio", Audio(sampling_rate=16_000))
 raw_test = raw_test.cast_column("audio", Audio(sampling_rate=16_000))
+
+tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(TOKENIZER_REPO)
+feature_extractor = Wav2Vec2FeatureExtractor(feature_size=1, sampling_rate=16000, padding_value=0.0, do_normalize=True, return_attention_mask=True)
+processor = Wav2Vec2Processor(feature_extractor=feature_extractor, tokenizer=tokenizer)
 
 def prepare_dataset(batch):
     audio = batch["audio"]
     batch["input_values"] = processor(audio["array"], sampling_rate=audio["sampling_rate"]).input_values[0]
     batch["input_length"] = len(batch["input_values"])
     with processor.as_target_processor():
-        batch["labels"] = processor(batch["sentence"]).input_ids
+        batch["labels"] = processor(batch["transcription"]).input_ids
     return batch
 
 print("Processing audio & labels...")
 train_dataset = raw_train.map(prepare_dataset, remove_columns=raw_train.column_names, batched=True, num_proc=4)
-eval_dataset = raw_test.map(prepare_dataset, remove_columns=raw_test.column_names, batched=True, num_proc=4)
+valid_dataset = raw_valid.map(prepare_dataset, remove_columns=raw_valid.column_names, batched=True, num_proc=4)
 
 # ----------------------------
 # Data collator
@@ -220,7 +167,7 @@ trainer = Trainer(
     args=training_args,
     compute_metrics=compute_metrics,
     train_dataset=train_dataset,
-    eval_dataset=eval_dataset,
+    eval_dataset=valid_dataset,
     tokenizer=processor.tokenizer,
 )
 
