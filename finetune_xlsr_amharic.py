@@ -63,11 +63,16 @@ feature_extractor = Wav2Vec2FeatureExtractor(feature_size=1, sampling_rate=16000
 processor = Wav2Vec2Processor(feature_extractor=feature_extractor, tokenizer=tokenizer)
 
 def prepare_dataset(batch):
-    audio = batch["audio"]
-    batch["input_values"] = processor(audio["array"], sampling_rate=audio["sampling_rate"]).input_values[0]
-    batch["input_length"] = len(batch["input_values"])
-    with processor.as_target_processor():
-        batch["labels"] = processor(batch["transcription"]).input_ids
+    # Extract all audio arrays from the batch
+    audio_arrays = [x["array"] for x in batch["audio"]]
+    sampling_rate = batch["audio"][0]["sampling_rate"]  # assume all same SR
+    
+    # Process inputs with the processor (returns input_values for each audio)
+    batch["input_values"] = processor(audio_arrays, sampling_rate=sampling_rate).input_values
+    
+    # Tokenize text labels
+    batch["labels"] = processor.tokenizer(batch["sentence"]).input_ids
+    
     return batch
 
 print("Processing audio & labels...")
