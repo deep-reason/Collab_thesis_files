@@ -76,8 +76,8 @@ def prepare_dataset(batch):
     return batch
 
 print("Processing audio & labels...")
-train_dataset = raw_train.map(prepare_dataset, remove_columns=raw_train.column_names, batched=True, num_proc=4)
-valid_dataset = raw_valid.map(prepare_dataset, remove_columns=raw_valid.column_names, batched=True, num_proc=4)
+train_dataset = raw_train.map(prepare_dataset, remove_columns=raw_train.column_names, batched=True)
+valid_dataset = raw_valid.map(prepare_dataset, remove_columns=raw_valid.column_names, batched=True)
 
 # ----------------------------
 # Data collator
