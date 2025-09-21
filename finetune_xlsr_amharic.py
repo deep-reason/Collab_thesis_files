@@ -1,12 +1,10 @@
 # ==========================
-# XLS-R Wav2Vec2 Fine-Tuning (Colab/Kaggle-ready)
+# XLS-R Wav2Vec2 Fine-Tuning (Colab-ready, streaming-safe)
 # ==========================
 import os
-import json
-import re
 import numpy as np
 import torch
-from datasets import load_dataset, Audio
+from datasets import load_dataset, Audio, DatasetDict
 from transformers import (
     Wav2Vec2CTCTokenizer,
     Wav2Vec2FeatureExtractor,
@@ -47,42 +45,71 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 torch.backends.cudnn.benchmark = True  # Optimize GPU throughput
 
 # ----------------------------
-# Load and preprocess dataset
+# Load dataset (streaming safe)
 # ----------------------------
 print("Loading dataset...")
-raw_train = load_dataset(DATASET_NAME, DATASET_CONFIG, split=TRAIN_SPLIT)
-raw_valid = load_dataset(DATASET_NAME, DATASET_CONFIG, split=VALID_SPLIT)
-raw_test = load_dataset(DATASET_NAME, DATASET_CONFIG, split=TEST_SPLIT)
+dataset = DatasetDict({
+    "train": load_dataset(DATASET_NAME, DATASET_CONFIG, split=TRAIN_SPLIT),
+    "valid": load_dataset(DATASET_NAME, DATASET_CONFIG, split=VALID_SPLIT),
+    "test": load_dataset(DATASET_NAME, DATASET_CONFIG, split=TEST_SPLIT),
+})
 
-raw_train = raw_train.cast_column("audio", Audio(sampling_rate=16_000))
-raw_valid = raw_valid.cast_column("audio", Audio(sampling_rate=16_000))
-raw_test = raw_test.cast_column("audio", Audio(sampling_rate=16_000))
+dataset = dataset.cast_column("audio", Audio(sampling_rate=16_000))
 
+# ----------------------------
+# Processor
+# ----------------------------
 tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(TOKENIZER_REPO)
-feature_extractor = Wav2Vec2FeatureExtractor(feature_size=1, sampling_rate=16000, padding_value=0.0, do_normalize=True, return_attention_mask=True)
+feature_extractor = Wav2Vec2FeatureExtractor(
+    feature_size=1,
+    sampling_rate=16000,
+    padding_value=0.0,
+    do_normalize=True,
+    return_attention_mask=True,
+)
 processor = Wav2Vec2Processor(feature_extractor=feature_extractor, tokenizer=tokenizer)
 
+# ----------------------------
+# Safe preprocessing function
+# ----------------------------
 def prepare_dataset(batch):
-    # Extract all audio arrays from the batch
-    audio_arrays = [x["array"] for x in batch["audio"]]
-    sampling_rate = batch["audio"][0]["sampling_rate"]  # assume all same SR
-    
-    # Process inputs with the processor (returns input_values for each audio)
-    batch["input_values"] = processor(audio_arrays, sampling_rate=sampling_rate).input_values
-    
-    # Tokenize text labels
+    audio = batch["audio"]
+    # Extract audio
+    batch["input_values"] = processor(audio["array"], sampling_rate=audio["sampling_rate"]).input_values
+    # Tokenize text
     batch["labels"] = processor.tokenizer(batch["transcription"]).input_ids
-    
     return batch
 
-print("Processing audio & labels...")
-train_dataset = raw_train.map(prepare_dataset, remove_columns=raw_train.column_names, batched=True)
-valid_dataset = raw_valid.map(prepare_dataset, remove_columns=raw_valid.column_names, batched=True)
+print("Processing datasets in streaming mode...")
+
+train_dataset = dataset["train"].map(
+    prepare_dataset,
+    remove_columns=dataset["train"].column_names,
+    batched=False,
+    num_proc=2,
+)
+
+valid_dataset = dataset["valid"].map(
+    prepare_dataset,
+    remove_columns=dataset["valid"].column_names,
+    batched=False,
+    num_proc=2,
+)
+
+# Save preprocessed dataset to disk (avoid reprocessing every run)
+disk_dataset_path = os.path.join(BASE_DIR, "amharic_w2v_prepared")
+DatasetDict({
+    "train": train_dataset,
+    "valid": valid_dataset,
+    "test": dataset["test"],  # keep test raw for later eval
+}).save_to_disk(disk_dataset_path)
+
+print(f"Saved preprocessed dataset to {disk_dataset_path}")
 
 # ----------------------------
 # Data collator
 # ----------------------------
-from typing import Any, Dict, List, Union
+from typing import Dict, List, Union
 
 class DataCollatorCTCWithPadding:
     def __init__(self, processor: Wav2Vec2Processor, padding=True):
